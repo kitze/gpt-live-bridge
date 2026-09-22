@@ -1,25 +1,13 @@
 # gpt-live-bridge — Twilio Media Streams ↔ gpt-live (codex-lb)
-FROM python:3.12-slim-bookworm
+# Python 3.11: av 14.x has manylinux wheels (3.12 does not for 14.x)
+FROM python:3.11-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PORT=8080
 
-# aiortc / av need these
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
-        pkg-config \
-        libavformat-dev \
-        libavcodec-dev \
-        libavdevice-dev \
-        libavutil-dev \
-        libswscale-dev \
-        libswresample-dev \
-        libavfilter-dev \
-        libsrtp2-dev \
-        libopus-dev \
-        libvpx-dev \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
