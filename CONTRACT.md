@@ -61,9 +61,9 @@ Outbound/inbound call TwiML should roughly:
 ```
 
 Also expose:
-- `GET /health` → 200 JSON
+- `GET /health` → 200 JSON (always public; shows `auth_required` and `twilio_signature_validation` status)
 - `POST /twilio/voice` → TwiML pointing at the WSS (optional query params for instructions)
-- Validate Twilio signatures when `TWILIO_AUTH_TOKEN` set
+- **Validate Twilio signatures when `TWILIO_AUTH_TOKEN` set** (uses official `RequestValidator` from `twilio` package; tries multiple URL candidates to handle Cloudflare Worker → funnel origin rewrites)
 
 ## Bridge job
 For each Twilio Media Stream session:
@@ -75,10 +75,11 @@ For each Twilio Media Stream session:
 
 Env vars (Coolify):
 - `CODEX_LB_URL` default `https://codex-lb.service.beast.kitze.io`
-- `CODEX_LB_API_KEY` (sk-clb-…)
+- `CODEX_LB_API_KEY` (sk-clb-…) — **required**
 - `LIVE_MODEL` default `gpt-live-1-codex`
-- `BRIDGE_TOKEN` or `VOICE_GATEWAY_TOKEN`-style shared secret for non-Twilio probes
-- `TWILIO_AUTH_TOKEN` optional signature check
+- **`BRIDGE_SHARED_SECRET`** (alias `BRIDGE_TOKEN`) — **required for production** to protect `/smoke/create-call` and `/outbound` from unauthorized gpt-live usage
+- **`TWILIO_AUTH_TOKEN`** — **required for production** to validate `X-Twilio-Signature` on `/twilio/voice` (fails closed)
+- `TWILIO_ACCOUNT_SID` — required for `/outbound` calls
 - `PORT` (Coolify)
 
 ## Deploy notes

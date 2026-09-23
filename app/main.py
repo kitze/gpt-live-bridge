@@ -10,7 +10,7 @@ import json
 import logging
 import os
 from typing import Any
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import parse_qs, urlencode, unquote
 
 import aiohttp
 from aiohttp import web
@@ -24,33 +24,141 @@ logging.basicConfig(
 )
 log = logging.getLogger("gpt-live-bridge")
 
+# Optional: import Twilio's official validator if available
+try:
+    from twilio.request_validator import RequestValidator as TwilioRequestValidator
+    _TWILIO_VALIDATOR_AVAILABLE = True
+except ImportError:
+    _TWILIO_VALIDATOR_AVAILABLE = False
+    log.warning("twilio package not available; using fallback HMAC validator")
+
 
 def _validate_twilio_signature(request: web.Request, body: bytes) -> bool:
+    """
+    Validate Twilio X-Twilio-Signature header.
+    
+    When TWILIO_AUTH_TOKEN is set: FAIL CLOSED (require valid signature).
+    When unset: permissive for local dev (log warning).
+    
+    Emergency escape: TWILIO_SKIP_SIGNATURE=1 disables validation (default off).
+    """
+    # Emergency kill-switch (default off, explicit opt-in only)
+    skip_env = os.environ.get("TWILIO_SKIP_SIGNATURE", "").strip().lower()
+    if skip_env in ("1", "true", "yes", "on"):
+        if not getattr(_validate_twilio_signature, "_skip_logged", False):
+            log.warning("TWILIO_SKIP_SIGNATURE=1: signature validation DISABLED (emergency only)")
+            _validate_twilio_signature._skip_logged = True  # type: ignore[attr-defined]
+        return True
+    
     token = config.TWILIO_AUTH_TOKEN
     if not token:
+        if not getattr(_validate_twilio_signature, "_notoken_logged", False):
+            log.warning("TWILIO_AUTH_TOKEN not set; signature validation disabled for local dev")
+            _validate_twilio_signature._notoken_logged = True  # type: ignore[attr-defined]
         return True
+    
     sig = request.headers.get("X-Twilio-Signature", "")
     if not sig:
+        log.warning(
+            "Twilio signature missing: path=%s ctype=%s body_len=%d",
+            request.path_qs,
+            request.content_type,
+            len(body),
+        )
         return False
-    # Twilio signs the full URL + sorted POST params
-    url = str(request.url)
-    # Prefer PUBLIC_BASE_URL path for signature if proxy rewrote host
-    if config.PUBLIC_BASE_URL:
-        url = config.PUBLIC_BASE_URL + request.path_qs
+    
+    # Parse form params
     params: dict[str, str] = {}
     ctype = request.content_type or ""
     if "application/x-www-form-urlencoded" in ctype:
-        form = parse_qs(body.decode("utf-8"), keep_blank_values=True)
-        params = {k: v[0] for k, v in form.items()}
-    pieces = url + "".join(k + params[k] for k in sorted(params))
-    digest = hmac.new(token.encode(), pieces.encode("utf-8"), hashlib.sha1).digest()
-    expected = base64.b64encode(digest).decode()
-    return hmac.compare_digest(expected, sig)
+        raw = body.decode("utf-8", errors="replace")
+        if raw:
+            form = parse_qs(raw, keep_blank_values=True)
+            params = {k: v[0] for k, v in form.items()}
+    
+    # Build URL candidates: Twilio signs the public URL it called
+    url_candidates = []
+    
+    # 1. PUBLIC_BASE_URL + path_qs (primary for proxied deployments)
+    if config.PUBLIC_BASE_URL:
+        url_candidates.append(config.PUBLIC_BASE_URL + request.path_qs)
+    
+    # 2. Request URL as-is (direct / local dev)
+    url_candidates.append(str(request.url))
+    
+    # 3. Reconstruct from X-Forwarded headers (fallback)
+    forwarded_proto = request.headers.get("X-Forwarded-Proto", "https")
+    forwarded_host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host")
+    if forwarded_host:
+        url_candidates.append(f"{forwarded_proto}://{forwarded_host}{request.path_qs}")
+    
+    # 4. Strip :10000 funnel port if present (chicken funnel origin uses :10000)
+    for base_url in list(url_candidates):
+        if ":10000" in base_url:
+            url_candidates.append(base_url.replace(":10000", ""))
+    
+    # Build param variants: handle CallToken double-encoding issue
+    param_variants = [params]
+    if "CallToken" in params:
+        # Try single unquote
+        p2 = dict(params)
+        try:
+            p2["CallToken"] = unquote(params["CallToken"])
+            param_variants.append(p2)
+        except Exception:
+            pass
+        # Try double unquote
+        p3 = dict(params)
+        try:
+            p3["CallToken"] = unquote(unquote(params["CallToken"]))
+            param_variants.append(p3)
+        except Exception:
+            pass
+    
+    # Try validation with Twilio's official validator if available
+    if _TWILIO_VALIDATOR_AVAILABLE:
+        validator = TwilioRequestValidator(token)
+        for url in url_candidates:
+            for pv in param_variants:
+                if validator.validate(url, pv, sig):
+                    return True
+    else:
+        # Fallback HMAC implementation
+        for url in url_candidates:
+            for pv in param_variants:
+                pieces = url + "".join(k + pv[k] for k in sorted(pv))
+                digest = hmac.new(token.encode(), pieces.encode("utf-8"), hashlib.sha1).digest()
+                expected = base64.b64encode(digest).decode()
+                if hmac.compare_digest(expected, sig):
+                    return True
+    
+    # All candidates failed
+    log.warning(
+        "Twilio signature mismatch: tried %d URL candidates × %d param variants. "
+        "path=%s public=%s req_url=%s sig_prefix=%s params=%s",
+        len(url_candidates),
+        len(param_variants),
+        request.path_qs,
+        config.PUBLIC_BASE_URL,
+        str(request.url)[:100],
+        sig[:20],
+        sorted(params.keys()),
+    )
+    return False
 
 
-def _check_shared_secret(request: web.Request) -> bool:
+def _check_shared_secret(request: web.Request, *, required: bool = False) -> bool:
+    """
+    Check bridge shared secret via X-Bridge-Secret header or ?secret= query param.
+    
+    When required=True: FAIL CLOSED (return False if secret not configured OR wrong).
+    When required=False: permissive if not configured (for /twilio/media WSS).
+    """
     secret = config.BRIDGE_SHARED_SECRET
     if not secret:
+        if required:
+            log.warning("BRIDGE_SHARED_SECRET not set; rejecting request to %s", request.path)
+            return False
         return True
     got = request.headers.get("X-Bridge-Secret") or request.query.get("secret")
     return hmac.compare_digest(str(got or ""), secret)
@@ -71,6 +179,8 @@ async def health(request: web.Request) -> web.Response:
             "tools": allowlist_names(),
             "almanac": bool(config.ALMANAC_URL),
             "mcp_bridge": bool(config.MCP_HTTP_BRIDGE_URL or config.BEEPER_BRIDGE_URL),
+            "auth_required": bool(config.BRIDGE_SHARED_SECRET),
+            "twilio_signature_validation": bool(config.TWILIO_AUTH_TOKEN),
         }
     )
 
@@ -117,7 +227,8 @@ def _xml_escape(s: str) -> str:
 
 
 async def twilio_media(request: web.Request) -> web.WebSocketResponse:
-    if not _check_shared_secret(request):
+    # Check secret if configured; permissive if not set (backward compat)
+    if not _check_shared_secret(request, required=False):
         raise web.HTTPForbidden(text="bad secret")
 
     ws = web.WebSocketResponse(heartbeat=30)
@@ -229,9 +340,9 @@ async def outbound(request: web.Request) -> web.Response:
     """Scaffold: place an outbound Twilio call that hits /twilio/voice.
 
     Body JSON: {to, agent?, mission?, opening?}
-    Requires TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN (or API key pair).
+    Requires BRIDGE_SHARED_SECRET + TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN.
     """
-    if not _check_shared_secret(request):
+    if not _check_shared_secret(request, required=True):
         raise web.HTTPForbidden(text="bad secret")
     try:
         body = await request.json()
@@ -274,8 +385,11 @@ async def outbound(request: web.Request) -> web.Response:
 
 
 async def smoke_create_call(request: web.Request) -> web.Response:
-    """Dev/smoke: create a live call with a real aiortc offer (no Twilio)."""
-    if not _check_shared_secret(request):
+    """Dev/smoke: create a live call with a real aiortc offer (no Twilio).
+    
+    Requires BRIDGE_SHARED_SECRET to prevent unauthorized gpt-live usage.
+    """
+    if not _check_shared_secret(request, required=True):
         raise web.HTTPForbidden(text="bad secret")
     if not config.CODEX_LB_API_KEY:
         raise web.HTTPServiceUnavailable(text="CODEX_LB_API_KEY not set")
