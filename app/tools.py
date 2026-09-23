@@ -144,7 +144,12 @@ async def run_calendar_agenda(http: aiohttp.ClientSession, args: dict[str, Any])
     body: dict[str, Any] = {"days": days}
     if args.get("date"):
         body["date"] = args["date"]
-    data = await _post_json(http, urljoin(base + "/", "api/google-calendar/agenda"), body)
+    headers = {}
+    if config.ALMANAC_TOKEN:
+        headers["Authorization"] = f"Bearer {config.ALMANAC_TOKEN}"
+    data = await _post_json(
+        http, urljoin(base + "/", "api/google-calendar/agenda"), body, headers=headers
+    )
     return _summarize(data, limit=1200)
 
 
