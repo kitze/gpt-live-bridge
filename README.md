@@ -31,15 +31,16 @@ Bridges **Twilio Media Streams** (μ-law 8 kHz over WSS) ↔ **gpt-live** on Kit
 | Var | Default | Notes |
 |-----|---------|-------|
 | `CODEX_LB_URL` | `https://codex-lb.service.beast.kitze.io` | |
-| `CODEX_LB_API_KEY` | — | `sk-clb-…` (HomeBrain key allows `gpt-live-1-codex`) |
+| `CODEX_LB_API_KEY` | — | **Required.** `sk-clb-…` (HomeBrain key allows `gpt-live-1-codex`) |
 | `LIVE_MODEL` | `gpt-live-1-codex` | |
 | `LIVE_VOICE` | `cove` | |
 | `LIVE_INSTRUCTIONS` | short helpful assistant | |
-| `PUBLIC_BASE_URL` | `https://gpt-live-bridge.exposed.kitze.io` | Used for TwiML WSS URL |
+| `PUBLIC_BASE_URL` | `https://gpt-live-bridge.exposed.kitze.io` | Used for TwiML WSS URL and Twilio signature validation |
 | `PORT` | `8080` | |
-| `TWILIO_AUTH_TOKEN` | — | Optional request signature validation + outbound |
-| `TWILIO_ACCOUNT_SID` | — | Outbound scaffold |
-| `BRIDGE_SHARED_SECRET` | — | Optional `?secret=` / `X-Bridge-Secret` |
+| **`TWILIO_AUTH_TOKEN`** | — | **Required for production.** Validates `X-Twilio-Signature` on `/twilio/voice`. **Fails closed** when set. Also used for `/outbound` calls. |
+| `TWILIO_ACCOUNT_SID` | — | Required for `/outbound` scaffold |
+| **`BRIDGE_SHARED_SECRET`** | — | **Required for production.** Protects `/smoke/create-call` and `/outbound` from unauthorized gpt-live usage. Accepts `X-Bridge-Secret` header or `?secret=` query param. Alias: `BRIDGE_TOKEN`. **Fails closed** on sensitive endpoints. |
+| `TWILIO_SKIP_SIGNATURE` | `0` | **Emergency only.** Set `1` to disable Twilio signature validation (not recommended). |
 | `ICE_SERVERS_JSON` | Google STUN | Optional RTCIceServer JSON list (add TURN if needed) |
 | `BARGE_IN_ENABLED` | `1` | On user energy / Twilio clear → `response.cancel` + Twilio `clear` |
 | `BARGE_IN_RMS` | `500` | PCM16 RMS threshold while agent speaking |
@@ -71,6 +72,30 @@ Session uses `delegation: { type: "client" }`. On `session.delegation.created` t
 2. Implement a runner in `RUNNERS` **or** expose it on `MCP_HTTP_BRIDGE_URL` as `POST /tools/invoke` `{tool, arguments}`
 3. Optionally teach `pick_tools_from_transcript` new keywords
 4. Redeploy
+
+## Security & Authentication
+
+### Twilio signature validation
+
+When `TWILIO_AUTH_TOKEN` is set, `/twilio/voice` **validates** the `X-Twilio-Signature` header using Twilio's official `RequestValidator`. 
+
+- **Fails closed**: invalid/missing signature → HTTP 403
+- Tries multiple URL candidates to handle proxy/Worker rewrites (Cloudflare Worker → chicken funnel origin)
+- Handles CallToken double-encoding edge cases
+- Emergency escape: `TWILIO_SKIP_SIGNATURE=1` (not recommended for production)
+
+### Bridge shared secret
+
+`BRIDGE_SHARED_SECRET` (alias `BRIDGE_TOKEN`) protects non-Twilio endpoints from unauthorized gpt-live usage:
+
+- **Required endpoints** (fail closed if not set OR wrong):
+  - `GET /smoke/create-call` — dev/test endpoint
+  - `POST /outbound` — outbound call scaffold
+- **Optional for** `GET /twilio/media` — backward compat (secret passed in stream URL by `/twilio/voice`)
+- **Auth methods:** `X-Bridge-Secret` header OR `?secret=` query param
+- `/health` always public (shows `auth_required: true` when secret is configured)
+
+**For production on Coolify:** set both `TWILIO_AUTH_TOKEN` and `BRIDGE_SHARED_SECRET`.
 
 ## Twilio wiring
 
