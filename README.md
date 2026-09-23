@@ -6,12 +6,13 @@ Bridges **Twilio Media Streams** (μ-law 8 kHz over WSS) ↔ **gpt-live** on Kit
 
 | Role | URL |
 |------|-----|
-| **Public (Twilio)** | `https://gpt-live-bridge.exposed.kitze.io` |
+| **Public (Twilio) — preferred** | `https://gpt-live-bridge.exposed.kitze.io` |
+| Public alias (Universal SSL) | `https://gpt-live-bridge.kitze.io` (same Worker) |
 | Voice webhook | `https://gpt-live-bridge.exposed.kitze.io/twilio/voice` |
 | Media WSS | `wss://gpt-live-bridge.exposed.kitze.io/twilio/media` |
 | Health | `https://gpt-live-bridge.exposed.kitze.io/health` |
 | Internal (Coolify / Tailscale) | `https://gpt-live-bridge.service.beast.kitze.io` |
-| Legacy chicken funnel | `https://traefik.chicken-galaxy.ts.net:10000` (origin behind the exposed Worker) |
+| Origin (chicken funnel) | `https://traefik.chicken-galaxy.ts.net:10000` (Worker ORIGIN) |
 
 `PUBLIC_BASE_URL` must be the **exposed** hostname so TwiML `<Stream>` points at a Twilio-reachable WSS.
 
