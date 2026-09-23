@@ -101,3 +101,18 @@ Beeper **send** is never auto-run.
 
 ## Barge-in
 On user speech energy or Twilio clear → `response.cancel` + Twilio `clear`.
+
+## Homebrain PWA proxy (added)
+
+Homebrain can point **live only** at this bridge while chat stays on codex-lb:
+
+| Method | Path | Auth |
+|--------|------|------|
+| POST | `/backend-api/codex/realtime/calls?...` | `Authorization: Bearer <BRIDGE_SHARED_SECRET\|CODEX_LB_API_KEY>` or `X-Bridge-Secret` |
+| WS | `/v1/live/{call_id}` | same |
+
+Bridge forwards to `CODEX_LB_URL` with its own `CODEX_LB_API_KEY`. Set Homebrain:
+
+- `CODEX_LIVE_URL=https://gpt-live-bridge.service.beast.kitze.io`
+- `CODEX_LIVE_API_KEY=<BRIDGE_SHARED_SECRET>`
+- keep `CODEX_LB_URL` / `CODEX_LB_API_KEY` for chat (`gpt-6-sol`)

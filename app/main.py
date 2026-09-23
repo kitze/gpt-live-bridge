@@ -181,6 +181,7 @@ async def health(request: web.Request) -> web.Response:
             "mcp_bridge": bool(config.MCP_HTTP_BRIDGE_URL or config.BEEPER_BRIDGE_URL),
             "auth_required": bool(config.BRIDGE_SHARED_SECRET),
             "twilio_signature_validation": bool(config.TWILIO_AUTH_TOKEN),
+            "homebrain_proxy": True,
         }
     )
 
@@ -447,6 +448,9 @@ def create_app() -> web.Application:
     app.router.add_get("/twilio/media", twilio_media)
     app.router.add_get("/smoke/create-call", smoke_create_call)
     app.router.add_post("/outbound", outbound)
+    # Homebrain PWA live/voice proxy (HTTP create-call + control WS)
+    from .homebrain_proxy import register as register_homebrain_proxy
+    register_homebrain_proxy(app)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app
