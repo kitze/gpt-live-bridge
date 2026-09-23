@@ -57,6 +57,8 @@ def _check_shared_secret(request: web.Request) -> bool:
 
 
 async def health(request: web.Request) -> web.Response:
+    from .tools import allowlist_names
+
     return web.json_response(
         {
             "ok": True,
@@ -65,6 +67,10 @@ async def health(request: web.Request) -> web.Response:
             "model": config.LIVE_MODEL,
             "has_api_key": bool(config.CODEX_LB_API_KEY),
             "public_base_url": config.PUBLIC_BASE_URL,
+            "barge_in": config.BARGE_IN_ENABLED,
+            "tools": allowlist_names(),
+            "almanac": bool(config.ALMANAC_URL),
+            "mcp_bridge": bool(config.MCP_HTTP_BRIDGE_URL or config.BEEPER_BRIDGE_URL),
         }
     )
 
@@ -135,6 +141,13 @@ async def twilio_media(request: web.Request) -> web.WebSocketResponse:
             }
         )
 
+    async def clear_twilio() -> None:
+        nonlocal stream_sid
+        if not stream_sid or ws.closed:
+            return
+        await ws.send_json({"event": "clear", "streamSid": stream_sid})
+        log.info("sent Twilio clear streamSid=%s", stream_sid)
+
     try:
         async for msg in ws:
             if msg.type != aiohttp.WSMsgType.TEXT:
@@ -169,6 +182,7 @@ async def twilio_media(request: web.Request) -> web.WebSocketResponse:
                         stream_sid or "unknown",
                         instructions=instructions,
                         send_mulaw=send_mulaw,
+                        clear_twilio=clear_twilio,
                     )
                     await bridge.start()
                     log.info(
@@ -192,6 +206,10 @@ async def twilio_media(request: web.Request) -> web.WebSocketResponse:
                 payload = media.get("payload")
                 if payload and bridge:
                     bridge.on_twilio_media(payload)
+            elif event == "clear":
+                log.info("twilio clear streamSid=%s", data.get("streamSid"))
+                if bridge:
+                    await bridge.on_twilio_clear()
             elif event == "stop":
                 log.info("twilio stop streamSid=%s", data.get("streamSid"))
                 break
@@ -204,6 +222,55 @@ async def twilio_media(request: web.Request) -> web.WebSocketResponse:
             await ws.close()
         log.info("Twilio media WS closed streamSid=%s", stream_sid)
     return ws
+
+
+
+async def outbound(request: web.Request) -> web.Response:
+    """Scaffold: place an outbound Twilio call that hits /twilio/voice.
+
+    Body JSON: {to, agent?, mission?, opening?}
+    Requires TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN (or API key pair).
+    """
+    if not _check_shared_secret(request):
+        raise web.HTTPForbidden(text="bad secret")
+    try:
+        body = await request.json()
+    except Exception:
+        raise web.HTTPBadRequest(text="json body required")
+    to = (body.get("to") or "").strip()
+    if not to:
+        raise web.HTTPBadRequest(text="to required")
+    opening = body.get("opening") or body.get("mission") or ""
+    agent = body.get("agent") or "kitze-assistant"
+    if not config.TWILIO_ACCOUNT_SID or not config.TWILIO_AUTH_TOKEN:
+        return web.json_response(
+            {
+                "ok": False,
+                "error": "outbound scaffold: set TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN",
+                "would_call": {"to": to, "from": config.TWILIO_FROM_NUMBER, "agent": agent},
+                "voice_url": f"{config.PUBLIC_BASE_URL}/twilio/voice",
+            },
+            status=501,
+        )
+    instructions = config.LIVE_INSTRUCTIONS
+    if opening:
+        instructions = f"{instructions}\nOpening line / mission: {opening}"
+    from urllib.parse import quote
+
+    voice_url = f"{config.PUBLIC_BASE_URL}/twilio/voice?instructions={quote(instructions[:800])}"
+    auth = aiohttp.BasicAuth(config.TWILIO_ACCOUNT_SID, config.TWILIO_AUTH_TOKEN)
+    form = {
+        "To": to,
+        "From": config.TWILIO_FROM_NUMBER,
+        "Url": voice_url,
+        "Method": "POST",
+    }
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{config.TWILIO_ACCOUNT_SID}/Calls.json"
+    async with request.app["http"].post(url, data=form, auth=auth) as resp:
+        text = await resp.text()
+        if resp.status >= 300:
+            return web.json_response({"ok": False, "status": resp.status, "body": text[:500]}, status=502)
+        return web.json_response({"ok": True, "agent": agent, "twilio": text[:1000], "voice_url": voice_url})
 
 
 async def smoke_create_call(request: web.Request) -> web.Response:
@@ -265,6 +332,7 @@ def create_app() -> web.Application:
     app.router.add_get("/twilio/voice", twilio_voice)  # Twilio console sometimes GETs
     app.router.add_get("/twilio/media", twilio_media)
     app.router.add_get("/smoke/create-call", smoke_create_call)
+    app.router.add_post("/outbound", outbound)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app

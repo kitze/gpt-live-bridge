@@ -135,6 +135,16 @@ class ControlChannel:
             }
         )
 
+    async def cancel_response(self, event_id: str | None = None) -> None:
+        """Ask gpt-live to stop the current spoken response (barge-in)."""
+        payload: dict[str, Any] = {"type": "response.cancel"}
+        if event_id:
+            payload["event_id"] = event_id
+        try:
+            await self.send(payload)
+        except Exception:
+            log.exception("response.cancel failed")
+
     async def close(self) -> None:
         if self._task:
             self._task.cancel()

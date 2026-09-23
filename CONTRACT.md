@@ -1,7 +1,7 @@
 # gpt-live-bridge contract (proven 2026-09-23)
 
 ## Goal
-Public service `https://gpt-live-bridge.service.beast.kitze.io` on Coolify (beast VM 192.168.1.180 / Coolify uuid destination for beast apps).
+Public service `https://gpt-live-bridge.exposed.kitze.io` (Worker → chicken funnel origin); internal `https://gpt-live-bridge.service.beast.kitze.io` on Coolify (beast VM 192.168.1.180 / Coolify uuid destination for beast apps).
 
 Twilio phone Media Streams (mulaw 8k PCM over WSS) ↔ OpenAI GPT-Live via Kitze `codex-lb` (ChatGPT **subscription**, not API credits). **No Vapi.**
 
@@ -55,7 +55,7 @@ Outbound/inbound call TwiML should roughly:
 <?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="wss://gpt-live-bridge.service.beast.kitze.io/twilio/media" />
+    <Stream url="wss://gpt-live-bridge.exposed.kitze.io/twilio/media" />
   </Connect>
 </Response>
 ```
@@ -91,3 +91,12 @@ Env vars (Coolify):
 - Vapi
 - OpenAI API credit keys
 - Home Assistant routing (voice-gateway already does that)
+
+
+## Client delegation tools
+Control WS handles `session.delegation.created` (target=client). Bridge runs allowlisted tools
+(calendar / dayfold / beeper read) and returns `session.commentary.append`.
+Beeper **send** is never auto-run.
+
+## Barge-in
+On user speech energy or Twilio clear → `response.cancel` + Twilio `clear`.
