@@ -42,7 +42,7 @@ BARGE_IN_ENABLED = (_env("BARGE_IN_ENABLED", "1") or "1") not in ("0", "false", 
 BARGE_IN_RMS = float(_env("BARGE_IN_RMS", "500") or "500")
 
 # Tool backends (client delegation)
-ALMANAC_URL = (_env("ALMANAC_URL", "http://be8movm5oahs7wvre5g1nrsr.beast.kitze.io") or "").rstrip("/")
+ALMANAC_URL = (_env("ALMANAC_URL", "https://almanac.service.beast.kitze.io") or "").rstrip("/")
 DAYFOLD_URL = (_env("DAYFOLD_URL", "https://dayfold.service.beast.kitze.io") or "").rstrip("/")
 DAYFOLD_TOKEN = _env("DAYFOLD_TOKEN", "") or ""
 # Optional HTTP bridge that fronts Executor Local / Skillbox MCP on CEO or beast.
